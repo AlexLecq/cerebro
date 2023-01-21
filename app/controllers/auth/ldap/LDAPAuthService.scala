@@ -10,6 +10,7 @@ import javax.naming.directory.SearchControls
 import play.api.{Configuration, Logger}
 
 import scala.util.control.NonFatal
+import java.{util => ju}
 
 class LDAPAuthService @Inject()(globalConfig: Configuration) extends AuthService {
 
@@ -35,7 +36,25 @@ class LDAPAuthService @Inject()(globalConfig: Configuration) extends AuthService
     }
   }
 
-  def checkGroupMembership(username: String, groupConfig: LDAPGroupSearchConfig): Boolean = {
+  def checkUserAuthWithDn(dn: String, password: String): Boolean = {
+    val props = new Hashtable[String, String]()
+    props.put(Context.SECURITY_PRINCIPAL, dn)
+    props.put(Context.SECURITY_CREDENTIALS, password)
+
+    try {
+      LdapCtxFactory.getLdapCtxInstance(config.url, props)
+      true
+    } catch {
+      case e: AuthenticationException =>
+        log.info(s"login of $dn failed with: ${e.getMessage}")
+        false
+      case NonFatal(e) =>
+        log.error(s"login of $dn failed", e)
+        false
+    }
+  }
+
+  def checkUserAuthWithGroupSearch(username: String, password: String, groupConfig: LDAPGroupSearchConfig): Boolean = {
     val props = new Hashtable[String, String]()
     props.put(Context.SECURITY_PRINCIPAL, groupConfig.bindDN)
     props.put(Context.SECURITY_CREDENTIALS, groupConfig.bindPwd)
@@ -45,9 +64,20 @@ class LDAPAuthService @Inject()(globalConfig: Configuration) extends AuthService
     controls.setSearchScope(SearchControls.SUBTREE_SCOPE)
     try {
       val context = LdapCtxFactory.getLdapCtxInstance(config.url, props)
-      val search = context.search(groupConfig.baseDN,s"(& (${groupConfig.userAttr}=$user)(${groupConfig.group}))", controls)
+      val filter = s"(& (${groupConfig.userAttr}=$user)(${groupConfig.group}))"
+      val search = context.search(groupConfig.baseDN, filter, controls)
       context.close()
-      search.hasMore()
+      if (!search.hasMore())
+        return false
+      
+      var dn = search.next().getNameInNamespace()
+      if (dn.isEmpty())
+        return false
+
+      if (!this.checkUserAuthWithDn(dn, password))
+        return false
+
+      return true
     } catch {
       case e: AuthenticationException =>
         log.info(s"User $username doesn't fulfill condition (${groupConfig.group}) : ${e.getMessage}")
@@ -60,7 +90,7 @@ class LDAPAuthService @Inject()(globalConfig: Configuration) extends AuthService
 
   def auth(username: String, password: String): Option[String] = {
     val isValidUser = config.groupMembership match {
-      case Some(groupConfig) => checkGroupMembership(username, groupConfig) && checkUserAuth(username, password)
+      case Some(groupConfig) => checkUserAuthWithGroupSearch(username, password, groupConfig)
       case None              => checkUserAuth(username, password)
     }
     if (isValidUser) Some(username) else None
