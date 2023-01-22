@@ -18,25 +18,14 @@ class LDAPAuthService @Inject()(globalConfig: Configuration) extends AuthService
 
   private final val config = new LDAPAuthConfig(globalConfig.get[Configuration]("auth.settings"))
 
-  def checkUserAuth(username: String, password: String): Boolean = {
-    val props = new Hashtable[String, String]()
-    props.put(Context.SECURITY_PRINCIPAL, config.userTemplate.format(username, config.baseDN))
-    props.put(Context.SECURITY_CREDENTIALS, password)
-
-    try {
-      LdapCtxFactory.getLdapCtxInstance(config.url, props)
-      true
-    } catch {
-      case e: AuthenticationException =>
-        log.info(s"login of $username failed with: ${e.getMessage}")
-        false
-      case NonFatal(e) =>
-        log.error(s"login of $username failed", e)
-        false
-    }
+  def checkUserAuthWithBaseDn(username: String, password: String): Boolean = {
+    val formatUser  = config.userTemplate.format(username, config.baseDN)
+    return checkDnAuth(formatUser, password)
   }
 
-  def checkUserAuthWithDn(dn: String, password: String): Boolean = {
+  def checkDnAuth(dn: String, password: String): Boolean = {
+    if (dn.isEmpty() || password.isEmpty())
+        return false
     val props = new Hashtable[String, String]()
     props.put(Context.SECURITY_PRINCIPAL, dn)
     props.put(Context.SECURITY_CREDENTIALS, password)
@@ -46,7 +35,7 @@ class LDAPAuthService @Inject()(globalConfig: Configuration) extends AuthService
       true
     } catch {
       case e: AuthenticationException =>
-        log.info(s"login of $dn failed with: ${e.getMessage}")
+        log.error(s"login of $dn failed with: ${e.getMessage}")
         false
       case NonFatal(e) =>
         log.error(s"login of $dn failed", e)
@@ -55,6 +44,8 @@ class LDAPAuthService @Inject()(globalConfig: Configuration) extends AuthService
   }
 
   def checkUserAuthWithGroupSearch(username: String, password: String, groupConfig: LDAPGroupSearchConfig): Boolean = {
+    if (username.isEmpty() || password.isEmpty() || groupConfig == null)
+        return false
     val props = new Hashtable[String, String]()
     props.put(Context.SECURITY_PRINCIPAL, groupConfig.bindDN)
     props.put(Context.SECURITY_CREDENTIALS, groupConfig.bindPwd)
@@ -74,13 +65,13 @@ class LDAPAuthService @Inject()(globalConfig: Configuration) extends AuthService
       if (dn.isEmpty())
         return false
 
-      if (!this.checkUserAuthWithDn(dn, password))
+      if (!this.checkDnAuth(dn, password))
         return false
 
       return true
     } catch {
       case e: AuthenticationException =>
-        log.info(s"User $username doesn't fulfill condition (${groupConfig.group}) : ${e.getMessage}")
+        log.error(s"User $username doesn't fulfill condition (${groupConfig.group}) : ${e.getMessage}")
         false
       case NonFatal(e) =>
         log.error(s"Unexpected error while checking group membership of $username", e)
@@ -91,7 +82,7 @@ class LDAPAuthService @Inject()(globalConfig: Configuration) extends AuthService
   def auth(username: String, password: String): Option[String] = {
     val isValidUser = config.groupMembership match {
       case Some(groupConfig) => checkUserAuthWithGroupSearch(username, password, groupConfig)
-      case None              => checkUserAuth(username, password)
+      case None              => checkUserAuthWithBaseDn(username, password)
     }
     if (isValidUser) Some(username) else None
   }
